@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" dir="ltr">
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8"/>
+
+<title>Plupload - Custom example</title>
+
+<!-- production -->
+<script type="text/javascript" src="../js/plupload.full.min.js"></script>
+<script src="http://code.jquery.com/jquery-latest.min.js"></script>
+<script type="text/javascript" src="../js/dateformat.min.js"></script>
+<script src="http://gosspublic.alicdn.com/aliyun-oss-sdk-4.7.3.min.js"></script>
+
+</head>
+<body style="font: 13px Verdana; background: #eee; color: #333">
+
+<h1>OSS pluploader example</h1>
+
+<p>Shows you how to use the core plupload API.</p>
+
+<div id="filelist">Your browser doesn't have Flash, Silverlight or HTML5 support.</div>
+<br />
+
+<div id="container">
+    <a id="pickfiles" href="javascript:;">[Select files]</a> 
+    <a id="uploadfiles" href="javascript:;">[Upload files]</a>
+</div>
+
+<br />
+<pre id="console"></pre>
+
+
+<script type="text/javascript">
+// Custom example logic
+
+const g_chunk_size = 1000000
+const g_bucket_name = ''
+const g_end_point = ''
+const g_sts_server = ''
+
+g_sts_id = ''
+g_sts_key = ''
+g_sts_token = ''
+g_part_num = 0
+
+var g_oss_client;
+var g_files_init_cnt = 0;
+var g_file_list = new Array()
+var g_part_map = new Map() // {part_index, part_etag}
+var g_file_map = new Map() // {file_name, upload_id}
+// to do: same file name problem
+
+
+function InitUploadParam(up, file, ret) {
+	g_part_num = 0
+	g_part_map.clear()
+    new_multipart_params = {
+        'success_action_status' : '200', //让服务端返回200,不然，默认会返回204
+    };
+
+    up.setOption({
+        'url': GetOssRequestUrl(),
+        'chunk_size': g_chunk_size,
+        'required_features': "chunks",
+        'multipart_params': new_multipart_params
+    });
+
+    // up.start();
+}
+
+function GetOssRequestUrl(object) {
+	url = 'https://' + g_bucket_name + "." + g_end_point + "/"
+	if (object && object != '') {
+		url += object
+	}
+	return url
+}
+
+function InitOssClient(id, key) {
+	g_oss_client = new OSS.Wrapper({
+      accessKeyId: id,
+      accessKeySecret: key,
+      bucket: g_bucket_name,
+      endpoint: g_end_point
+    })
+}
+
+function InitOssMultipartAndStartUploader(fileName, objectName, uploader) {
+	// Get UTC date time
+	var now = new Date();
+    dateStr = $.format.date(new Date(now.getTime() + now.getTimezoneOffset() * 60000), "E, dd MMM yyyy HH:mm:ss \'GMT\'")
+
+    // Init Headers for sign auth and post request
+    var headers = {
+	    'x-oss-date': dateStr,
+	    'x-oss-security-token': g_sts_token,
+	    'Content-Type': ""
+	};
+
+	resource = "/" + g_bucket_name + "/" + objectName
+    signAuth = g_oss_client.authorization("POST", resource,
+    									  "uploads", headers)
+ 
+    headers["authorization"] = signAuth
+    console.log("InitOssMultipart headers:", headers)
+
+    initMultipartUrl = GetOssRequestUrl(objectName) + "?uploads"
+	$.ajax({
+		type: "POST",
+		headers: headers,
+		url: initMultipartUrl,
+	}).done(function(response) {
+	  	console.log("Init mp resp:", response)
+	  	uploadId = $(response).find("UploadId")[0].textContent
+	  	g_files_init_cnt++;
+	  	
+		g_file_map.set(fileName, uploadId)
+		console.log("InitOssMultipart fileName="+fileName+" uploadId="+uploadId+" gUploadId="+g_file_map.get(fileName))
+		if (g_files_init_cnt == g_file_list.length) {
+			console.log("uploader start")
+			uploader.start();
+		}
+	 }).fail(function(){
+    	alert("InitOssMultipart failed! file="+fileName);
+    });
+}
+
+function CompleteOssMultipart(uploader, file) {
+	var xml = '<?xml version="1.0" encoding="UTF-8"?>\n<CompleteMultipartUpload>\n';
+	length = g_part_map.size
+	for (var i = 1; i <= length; i++) {
+		xml += '<Part>\n';
+		xml += '<PartNumber>' + i + '</PartNumber>\n';
+		xml += '<ETag>' + g_part_map.get(i) + '</ETag>\n';
+		xml += '</Part>\n';
+	}
+	xml += '</CompleteMultipartUpload>';
+
+	var now = new Date();
+	dateStr = $.format.date(new Date(now.getTime() + now.getTimezoneOffset() * 60000),
+							"E, dd MMM yyyy HH:mm:ss \'GMT\'")
+
+	var headers = {
+		'x-oss-date': dateStr,
+		'x-oss-security-token': g_sts_token,
+		'Content-Type': "application/xml"
+	};
+
+	objectName = file.name
+	uploadId = g_file_map.get(file.name)
+	resource = "/" + g_bucket_name + "/" + objectName
+	signAuth = g_oss_client.authorization("POST", resource,
+										  {"uploadId":uploadId},
+										  headers)
+
+	headers["authorization"] = signAuth
+	console.log("CompleteOssMultipart headers:", headers)
+
+	completeMultipartUrl = GetOssRequestUrl(objectName) + "?uploadId=" + uploadId
+	$.ajax({
+		type: "POST",
+		headers: headers,
+		url: completeMultipartUrl,
+		data: xml,
+		contentType: 'application/xml',
+	}).done(function() {
+		console.log( "upload done" );
+	}).fail(function(){
+    	alert("CompleteOssMultipart failed!");
+    });
+}
+
+function StartUploader(uploader) {
+	$.ajax({
+		type: "GET",
+		dataType: "json",
+		url: g_sts_server,
+	}).done(function(response) {
+	  	console.log("Get STS resp:", response);
+        g_sts_id = response.AccessKeyId
+        g_sts_key = response.AccessKeySecret
+        g_sts_token = response.SecurityToken
+        InitOssClient(g_sts_id, g_sts_key)
+        var length = g_file_list.length;
+		for (var i=0; i < length; i++) {
+		    InitOssMultipartAndStartUploader(g_file_list[i].name, g_file_list[i].name, uploader)
+		}
+    }).fail(function(){
+    	alert("GetStsAuthInfo failed!");
+    });
+}
+
+function SetPutPartParams(uploader, file) {
+	var now = new Date();
+    dateStr = $.format.date(new Date(now.getTime() + now.getTimezoneOffset() * 60000), "E, dd MMM yyyy HH:mm:ss \'GMT\'")
+
+    var headers = {
+	    'x-oss-date': dateStr,
+	    'x-oss-security-token': g_sts_token,
+	    'Content-Type': "application/octet-stream"
+	};
+
+	objectName = file.name
+	uploadId = g_file_map.get(file.name)
+	resource = "/" + g_bucket_name + "/" + objectName
+    signAuth = g_oss_client.authorization("PUT", resource,
+    									  {"partNumber":g_part_num, "uploadId":uploadId},
+    									  headers)
+
+    headers["authorization"] = signAuth
+    console.log("SetPutPartParams headers:", headers)
+
+	putPartUrl = GetOssRequestUrl(objectName)+'?partNumber='+g_part_num+'&uploadId='+uploadId
+	uploader.setOption({
+        'url': putPartUrl,
+        'headers': headers,
+        'http_method': 'PUT',
+        'multipart': false,
+    });
+}
+
+var uploader = new plupload.Uploader({
+	runtimes : 'html5,flash,silverlight,html4',
+	browse_button : 'pickfiles',
+	container: document.getElementById('container'),
+	url : 'https://oss-cn-shanghai.aliyuncs.com',
+	flash_swf_url : '../js/Moxie.swf',
+	silverlight_xap_url : '../js/Moxie.xap',
+	
+	filters : {
+		max_file_size : '10000mb',
+	},
+
+	init: {
+		PostInit: function() {
+			document.getElementById('filelist').innerHTML = '';
+
+			document.getElementById('uploadfiles').onclick = function() {
+				console.log("uploadfiles onclick event activated");
+				StartUploader(uploader)
+			};
+		},
+
+		FilesAdded: function(up, files) {
+			g_files_init_cnt = 0
+			plupload.each(files, function(file) {
+				document.getElementById('filelist').innerHTML += '<div id="' + file.id + '">' + file.name + ' (' + plupload.formatSize(file.size) + ') <b></b></div>';
+				g_file_list.push(file)
+			});
+		},
+
+		BeforeUpload: function(up, file) {
+			console.log("BeforeUpload event activated");
+            InitUploadParam(up, file, true);
+        },
+
+        BeforeChunkUpload: function(up, file, args, chunkBlob, offset) {
+			console.log("BeforeChunkUpload event activated");
+			g_part_num += 1
+			SetPutPartParams(up, file)
+        },
+
+        ChunkUploaded: function(up, file, info) {
+        	console.log("ChunkUploaded event activated url="+up.getOption('url'));
+    		var respHeaderStr = info.responseHeaders
+    		g_part_map.set(g_part_num, respHeaderStr.split("\"")[1])
+        },
+
+		FileUploaded: function(up, file, resp) {
+			CompleteOssMultipart(up, file)
+			console.log("ChunkUploaded event activated url="+up.getOption('url'));
+        },
+
+		UploadProgress: function(up, file) {
+			document.getElementById(file.id).getElementsByTagName('b')[0].innerHTML = '<span>' + file.percent + "%</span>";
+		},
+
+		Error: function(up, err) {
+			document.getElementById('console').appendChild(document.createTextNode("\nError #" + err.code + ": " + err.message));
+		}
+	}
+});
+
+uploader.init();
+
+</script>
+</body>
+</html>
