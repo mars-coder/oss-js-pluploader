@@ -219,6 +219,10 @@ function SetPutPartParams(uploader, file) {
     });
 }
 
+var speedInfo = {
+    lastTime: ""
+}
+
 var uploader = new plupload.Uploader({
 	runtimes : 'html5,flash,silverlight,html4',
 	browse_button : 'pickfiles',
@@ -251,6 +255,7 @@ var uploader = new plupload.Uploader({
 
 		BeforeUpload: function(up, file) {
 			console.log("BeforeUpload event activated");
+			speedInfo.lastTime = new Date().getTime();
             InitUploadParam(up, file, true);
         },
 
@@ -272,7 +277,13 @@ var uploader = new plupload.Uploader({
         },
 
 		UploadProgress: function(up, file) {
-			document.getElementById(file.id).getElementsByTagName('b')[0].innerHTML = '<span>' + file.percent + "%</span>";
+			currentTime = new Date().getTime();
+            var timeUsed = currentTime - speedInfo.lastTime; // ms
+            var fileUploaded = file.loaded || 0;
+
+            file.speed = (fileUploaded / timeUsed * 1000 / 1024 / 1024).toFixed(3) || 0;
+            var d = document.getElementById(file.id);
+            d.getElementsByTagName('b')[0].innerHTML = '<span>' + file.percent + "% "+file.speed+"MB/s</span>";
 		},
 
 		Error: function(up, err) {
